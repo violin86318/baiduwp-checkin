@@ -7,6 +7,7 @@ import os
 import re
 import sys
 import time
+from datetime import datetime, timezone, timedelta
 
 import requests
 
@@ -51,6 +52,7 @@ class BaiduWP:
         resp = self.session.get(url, headers=self.headers, timeout=30)
         answer = None
         ask_id = None
+        question_msg = "今日暂无答题任务或已完成"
         if resp.status_code == 200:
             answer_match = re.search(r'"answer":(\d+),', resp.text)
             if answer_match:
@@ -58,7 +60,11 @@ class BaiduWP:
             ask_id_match = re.search(r'"ask_id":(\d+),', resp.text)
             if ask_id_match:
                 ask_id = ask_id_match.group(1)
-        return ask_id, answer
+            if ask_id and answer:
+                question_msg = f"获取问题成功, answer: {answer}, ask_id: {ask_id}"
+        else:
+            question_msg = f"获取问题失败: HTTP {resp.status_code}"
+        return ask_id, answer, question_msg
 
     def answer_question(self, ask_id, answer):
         url = (
@@ -92,16 +98,21 @@ class BaiduWP:
         return current_level, current_value
 
     def run(self):
+        execution_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         sign_point, signin_error_msg = self.signin()
         time.sleep(3)
-        ask_id, answer = self.get_question()
+        ask_id, answer, question_msg = self.get_question()
         answer_score, answer_msg = (None, "")
         if ask_id and answer:
             answer_score, answer_msg = self.answer_question(ask_id, answer)
         current_level, current_value = self.get_userinfo()
         return {
+            "execution_time": execution_time,
             "sign_point": sign_point,
             "signin_error_msg": signin_error_msg,
+            "ask_id": ask_id,
+            "question_answer": answer,
+            "question_msg": question_msg,
             "answer_score": answer_score,
             "answer_msg": answer_msg,
             "current_level": current_level,
@@ -155,49 +166,126 @@ def load_accounts():
     return cookies
 
 
-def build_account_lines(index: int, result: dict) -> list[str]:
-    return [
-        f"账号 {index}",
-        f"签到: {result['sign_point'] or ''}{result['signin_error_msg'] or ''}",
-        f"答题: {result['answer_score'] or ''}{result['answer_msg'] or ''}",
-        f"等级/成长值: {result['current_level'] or ''}/{result['current_value'] or ''}",
-    ]
+def to_beijing_time(utc_iso: str) -> str:
+    if not utc_iso:
+        return ""
+    dt = datetime.fromisoformat(utc_iso.replace("Z", "+00:00"))
+    beijing = dt.astimezone(timezone(timedelta(hours=8)))
+    return beijing.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def is_signin_success(result: dict) -> bool:
+    return is_benign_signin_message(result.get("signin_error_msg", ""))
+
+
+def is_answer_skipped(result: dict) -> bool:
+    message = (result.get("answer_msg") or "").strip().lower()
+    return "exceeded limit" in message or "num exceeded limit" in message
+
+
+def is_answer_success(result: dict) -> bool:
+    score = result.get("answer_score")
+    return score not in (None, "", "0", 0)
+
+
+def total_points_for_result(result: dict) -> int:
+    sign_point = int(result.get("sign_point") or 0)
+    answer_score = int(result.get("answer_score") or 0)
+    return sign_point + answer_score
+
+
+def build_summary_lines(results: list[dict], failed: bool, error_message: str = "") -> list[str]:
+    lines = []
+    lines.append("📊 签到 & 答题汇总结果")
+    lines.append("")
+    lines.append("统计")
+    lines.append(f"条目数: {len(results)}")
+    lines.append(f"总积分增量: {sum(total_points_for_result(result) for result in results)}")
+    signin_success_count = sum(1 for result in results if is_signin_success(result))
+    signin_fail_count = len(results) - signin_success_count
+    answer_success_count = sum(1 for result in results if is_answer_success(result))
+    answer_fail_count = sum(
+        1
+        for result in results
+        if not is_answer_success(result) and not is_answer_skipped(result)
+    )
+    lines.append(f"签到: ✅ {signin_success_count}  / ❌ {signin_fail_count}")
+    lines.append(f"答题: ✅ {answer_success_count}  / ❌ {answer_fail_count}")
+    earliest = results[0]["execution_time"] if results else ""
+    if earliest:
+        lines.append(f"最早执行(UTC): {earliest}")
+        lines.append(f"最早执行(北京): {to_beijing_time(earliest)}")
+    if error_message:
+        lines.append(f"错误: {error_message}")
+    lines.append("")
+    lines.append("🔍 逐条详情")
+    return lines
+
+
+def build_detail_lines(index: int, result: dict) -> list[str]:
+    execution_time = result.get("execution_time", "")
+    sign_point = int(result.get("sign_point") or 0)
+    answer_score = int(result.get("answer_score") or 0)
+    signin_message = result.get("signin_error_msg") or ""
+    answer_message = result.get("answer_msg") or ""
+    ask_id = result.get("ask_id")
+    answer = result.get("question_answer")
+    question_msg = result.get("question_msg") or "今日暂无答题任务或已完成"
+
+    if sign_point > 0:
+        signin_detail = f"签到成功, 获得积分: {sign_point}, 提示: {signin_message}"
+    else:
+        signin_detail = signin_message
+
+    if answer_score > 0:
+        answer_detail = f"答题成功, 获得积分: {answer_score}, 提示: {answer_message}"
+        answer_icon = "✅"
+    elif is_answer_skipped(result):
+        answer_detail = answer_message
+        answer_icon = "➖"
+    else:
+        answer_detail = answer_message or "无答题结果"
+        answer_icon = "❌"
+
+    lines = []
+    lines.append(f"条目 #{index}")
+    lines.append(f"执行时间(UTC): {execution_time}")
+    lines.append(f"执行时间(北京): {to_beijing_time(execution_time)}")
+    lines.append(f"签到: {'✅' if is_signin_success(result) else '❌'} {signin_detail} (积分+{sign_point})")
+    if ask_id and answer:
+        lines.append(f"题目: 获取成功 ask_id={ask_id}，拟答: {answer}")
+    else:
+        lines.append("题目: 无")
+    lines.append(f"题目消息: {question_msg}")
+    lines.append(f"答题: {answer_icon} {answer_detail} (得分:{answer_score})")
+    lines.append(f"会员等级/成长值: {result.get('current_level') or ''} / {result.get('current_value') or ''}")
+    lines.append(
+        f"用户信息: 当前会员等级: {result.get('current_level') or ''}, 成长值: {result.get('current_value') or ''}"
+    )
+    lines.append(f"本条累计积分变动: {total_points_for_result(result)}")
+    return lines
 
 
 def render_text_summary(results: list[dict], failed: bool, error_message: str = "") -> str:
-    lines = []
-    lines.append("百度网盘签到结果")
-    lines.append(f"状态: {'失败' if failed else '成功'}")
-    if error_message:
-        lines.append(f"错误: {error_message}")
-
+    lines = build_summary_lines(results=results, failed=failed, error_message=error_message)
     for index, result in enumerate(results, start=1):
+        lines.extend(build_detail_lines(index=index, result=result))
         lines.append("")
-        lines.extend(build_account_lines(index, result))
-
-    return "\n".join(lines)
+    lines.append(f"生成时间(北京): {to_beijing_time(datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'))}")
+    return "\n".join(lines).rstrip()
 
 
 def render_telegram_html(results: list[dict], failed: bool, error_message: str = "") -> str:
     lines = []
-    lines.append("<b>百度网盘签到结果</b>")
-    lines.append(f"状态: {'失败' if failed else '成功'}")
-    if error_message:
-        lines.append(f"错误: <code>{html.escape(error_message)}</code>")
-
-    for index, result in enumerate(results, start=1):
-        lines.append("")
-        lines.append(f"<b>账号 {index}</b>")
-        lines.append(
-            f"签到: <code>{html.escape(str(result['sign_point'] or '') + str(result['signin_error_msg'] or ''))}</code>"
-        )
-        lines.append(
-            f"答题: <code>{html.escape(str(result['answer_score'] or '') + str(result['answer_msg'] or ''))}</code>"
-        )
-        lines.append(
-            f"等级/成长值: <code>{html.escape(str(result['current_level'] or ''))}/{html.escape(str(result['current_value'] or ''))}</code>"
-        )
-
+    for line in render_text_summary(results=results, failed=failed, error_message=error_message).splitlines():
+        if line in ("📊 签到 & 答题汇总结果", "统计", "🔍 逐条详情"):
+            lines.append(f"<b>{html.escape(line)}</b>")
+        elif line.startswith("条目 #"):
+            lines.append(f"<b>{html.escape(line)}</b>")
+        elif line.startswith("本条累计积分变动:"):
+            lines.append(f"<b>{html.escape(line)}</b>")
+        else:
+            lines.append(html.escape(line))
     return "\n".join(lines)
 
 

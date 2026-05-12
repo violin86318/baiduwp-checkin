@@ -1,0 +1,28 @@
+name: Baidu Wangpan Check-in
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "10 1 * * *"
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run check-in
+        env:
+          BAIDUWP_ACCOUNTS: ${{ secrets.BAIDUWP_ACCOUNTS }}
+        run: python baiduwp.py

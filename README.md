@@ -8,6 +8,8 @@
 - 每日答题
 - 查询当前会员等级和成长值
 - 支持多账号
+- 支持 Telegram Bot 通知
+- 支持飞书机器人通知
 
 ## 配置
 
@@ -25,6 +27,13 @@
   }
 ]
 ```
+
+可选通知 Secrets：
+
+- `TELEGRAM_BOT_TOKEN`: Telegram Bot Token
+- `TELEGRAM_CHAT_ID`: Telegram 接收消息的 chat id
+- `FEISHU_WEBHOOK_URL`: 飞书自定义机器人 Webhook
+- `FEISHU_WEBHOOK_SECRET`: 飞书机器人签名密钥，可选
 
 ## Cookie 获取
 
@@ -49,8 +58,19 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 export BAIDUWP_ACCOUNTS='[{"cookie":"BDUSS=xxx; STOKEN=xxx; ..."}]'
+export TELEGRAM_BOT_TOKEN='123456:abcdef'
+export TELEGRAM_CHAT_ID='123456789'
+export FEISHU_WEBHOOK_URL='https://open.feishu.cn/open-apis/bot/v2/hook/xxx'
+export FEISHU_WEBHOOK_SECRET='xxx'
 python baiduwp.py
 ```
+
+## 通知说明
+
+- 如果只配置 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_CHAT_ID`，会只发 Telegram
+- 如果只配置 `FEISHU_WEBHOOK_URL`，会只发飞书
+- 两边都配置，就会同时发送
+- 即使签到流程失败，也会尽量发送失败通知
 
 ## 注意
 

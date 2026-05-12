@@ -1,3 +1,7 @@
+import base64
+import html
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -151,33 +155,158 @@ def load_accounts():
     return cookies
 
 
+def build_account_lines(index: int, result: dict) -> list[str]:
+    return [
+        f"账号 {index}",
+        f"签到: {result['sign_point'] or ''}{result['signin_error_msg'] or ''}",
+        f"答题: {result['answer_score'] or ''}{result['answer_msg'] or ''}",
+        f"等级/成长值: {result['current_level'] or ''}/{result['current_value'] or ''}",
+    ]
+
+
+def render_text_summary(results: list[dict], failed: bool, error_message: str = "") -> str:
+    lines = []
+    lines.append("百度网盘签到结果")
+    lines.append(f"状态: {'失败' if failed else '成功'}")
+    if error_message:
+        lines.append(f"错误: {error_message}")
+
+    for index, result in enumerate(results, start=1):
+        lines.append("")
+        lines.extend(build_account_lines(index, result))
+
+    return "\n".join(lines)
+
+
+def render_telegram_html(results: list[dict], failed: bool, error_message: str = "") -> str:
+    lines = []
+    lines.append("<b>百度网盘签到结果</b>")
+    lines.append(f"状态: {'失败' if failed else '成功'}")
+    if error_message:
+        lines.append(f"错误: <code>{html.escape(error_message)}</code>")
+
+    for index, result in enumerate(results, start=1):
+        lines.append("")
+        lines.append(f"<b>账号 {index}</b>")
+        lines.append(
+            f"签到: <code>{html.escape(str(result['sign_point'] or '') + str(result['signin_error_msg'] or ''))}</code>"
+        )
+        lines.append(
+            f"答题: <code>{html.escape(str(result['answer_score'] or '') + str(result['answer_msg'] or ''))}</code>"
+        )
+        lines.append(
+            f"等级/成长值: <code>{html.escape(str(result['current_level'] or ''))}/{html.escape(str(result['current_value'] or ''))}</code>"
+        )
+
+    return "\n".join(lines)
+
+
+def send_telegram_message(message_html: str):
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+    if not bot_token or not chat_id:
+        return
+
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    response = requests.post(
+        url,
+        json={
+            "chat_id": chat_id,
+            "text": message_html,
+            "parse_mode": "HTML",
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+
+
+def build_feishu_sign(secret: str) -> tuple[str, str]:
+    timestamp = str(int(time.time()))
+    string_to_sign = f"{timestamp}\n{secret}"
+    sign = base64.b64encode(
+        hmac.new(string_to_sign.encode("utf-8"), digestmod=hashlib.sha256).digest()
+    ).decode("utf-8")
+    return timestamp, sign
+
+
+def send_feishu_message(message_text: str):
+    webhook_url = os.getenv("FEISHU_WEBHOOK_URL", "").strip()
+    webhook_secret = os.getenv("FEISHU_WEBHOOK_SECRET", "").strip()
+    if not webhook_url:
+        return
+
+    payload = {
+        "msg_type": "text",
+        "content": {
+            "text": message_text,
+        },
+    }
+    if webhook_secret:
+        timestamp, sign = build_feishu_sign(webhook_secret)
+        payload["timestamp"] = timestamp
+        payload["sign"] = sign
+
+    response = requests.post(webhook_url, json=payload, timeout=30)
+    response.raise_for_status()
+
+
+def send_notifications(results: list[dict], failed: bool, error_message: str = ""):
+    telegram_message = render_telegram_html(results=results, failed=failed, error_message=error_message)
+    feishu_message = render_text_summary(results=results, failed=failed, error_message=error_message)
+    errors = []
+
+    try:
+        send_telegram_message(telegram_message)
+    except Exception as exc:
+        errors.append(f"Telegram 通知失败: {exc}")
+
+    try:
+        send_feishu_message(feishu_message)
+    except Exception as exc:
+        errors.append(f"飞书通知失败: {exc}")
+
+    for error in errors:
+        print(error)
+
+
 def main():
-    cookies = load_accounts()
+    results = []
     failed = False
+    error_message = ""
 
-    for index, cookie in enumerate(cookies, start=1):
-        result = BaiduWP(cookie).run()
-        print(f"== Account {index} ==")
-        print(
-            "签到获得"
-            f"{result['sign_point'] or ''}"
-            f"{result['signin_error_msg'] or ''}"
-        )
-        print(
-            "答题获得"
-            f"{result['answer_score'] or ''}"
-            f"{result['answer_msg'] or ''}"
-        )
-        print(
-            f"当前会员等级{result['current_level'] or ''}，"
-            f"成长值{result['current_value'] or ''}"
-        )
+    try:
+        cookies = load_accounts()
 
-        if not is_benign_signin_message(result["signin_error_msg"]):
-            failed = True
+        for index, cookie in enumerate(cookies, start=1):
+            result = BaiduWP(cookie).run()
+            results.append(result)
+            print(f"== Account {index} ==")
+            print(
+                "签到获得"
+                f"{result['sign_point'] or ''}"
+                f"{result['signin_error_msg'] or ''}"
+            )
+            print(
+                "答题获得"
+                f"{result['answer_score'] or ''}"
+                f"{result['answer_msg'] or ''}"
+            )
+            print(
+                f"当前会员等级{result['current_level'] or ''}，"
+                f"成长值{result['current_value'] or ''}"
+            )
 
-        if not is_benign_answer_message(result["answer_msg"]):
-            failed = True
+            if not is_benign_signin_message(result["signin_error_msg"]):
+                failed = True
+
+            if not is_benign_answer_message(result["answer_msg"]):
+                failed = True
+    except Exception as exc:
+        failed = True
+        error_message = str(exc)
+        print(f"执行失败: {error_message}")
+    finally:
+        send_notifications(results=results, failed=failed, error_message=error_message)
 
     if failed:
         sys.exit(1)

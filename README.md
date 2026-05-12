@@ -47,8 +47,8 @@
 ### GitHub Actions
 
 - 工作流文件: `.github/workflows/baiduwp.yml`
-- 默认执行时间: UTC `16:03`
-- 按上海时区计算: 每天 `00:03`
+- 默认执行时间: UTC `16:17` 和 `03:18`
+- 按上海时区计算: 每天 `00:17` 和 `11:18`
 - 也支持手动触发 `workflow_dispatch`
 
 ### 本地运行

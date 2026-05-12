@@ -3,7 +3,8 @@ name: Baidu Wangpan Check-in
 on:
   workflow_dispatch:
   schedule:
-    - cron: "3 16 * * *"
+    - cron: "17 16 * * *"
+    - cron: "18 3 * * *"
 
 jobs:
   checkin:

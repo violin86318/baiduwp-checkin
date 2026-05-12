@@ -105,6 +105,32 @@ class BaiduWP:
         }
 
 
+def is_benign_signin_message(message: str) -> bool:
+    normalized = (message or "").strip().lower()
+    if not normalized:
+        return True
+    benign_markers = [
+        "已签到",
+        "repeat signin",
+        "success",
+    ]
+    return any(marker in normalized for marker in benign_markers)
+
+
+def is_benign_answer_message(message: str) -> bool:
+    normalized = (message or "").strip().lower()
+    if not normalized:
+        return True
+    benign_markers = [
+        "已答",
+        "重复答题",
+        "repeat",
+        "exceeded limit",
+        "num exceeded limit",
+    ]
+    return any(marker in normalized for marker in benign_markers)
+
+
 def load_accounts():
     raw = os.getenv("BAIDUWP_ACCOUNTS", "").strip()
     if not raw:
@@ -147,11 +173,10 @@ def main():
             f"成长值{result['current_value'] or ''}"
         )
 
-        if (
-            result["signin_error_msg"]
-            and "已签到" not in result["signin_error_msg"]
-            and "success" not in result["signin_error_msg"].lower()
-        ):
+        if not is_benign_signin_message(result["signin_error_msg"]):
+            failed = True
+
+        if not is_benign_answer_message(result["answer_msg"]):
             failed = True
 
     if failed:
